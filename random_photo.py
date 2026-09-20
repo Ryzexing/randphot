@@ -5,6 +5,9 @@ import sys
 import subprocess
 import threading
 import ctypes
+import tempfile
+import urllib.error
+import urllib.request
 from ctypes import wintypes
 import tkinter as tk
 from pathlib import Path
@@ -14,6 +17,8 @@ import pystray
 from PIL import ImageDraw
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
+APP_VERSION = "1.0.0"
+GITHUB_REPOSITORY = "Ryzexing/randphot"
 HOTKEY_ID = 1
 WM_HOTKEY = 0x0312
 WM_QUIT = 0x0012
@@ -89,6 +94,73 @@ def save_settings():
             )
     except OSError:
         pass
+
+
+def version_tuple(version):
+    return tuple(int(part) for part in version.lstrip("v").split(".")[:3])
+
+
+def check_for_updates():
+    try:
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest",
+            headers={"User-Agent": "RandomPhoto-Updater"},
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            release = json.loads(response.read().decode("utf-8"))
+        latest_version = release.get("tag_name", "").lstrip("v")
+        if version_tuple(latest_version) <= version_tuple(APP_VERSION):
+            root.after(0, lambda: status_var.set(f"Установлена последняя версия {APP_VERSION}"))
+            return
+        assets = release.get("assets", [])
+        asset = next((item for item in assets if item.get("name") == "RandomPhoto.exe"), None)
+        if asset is None:
+            root.after(0, lambda: status_var.set(f"Доступна версия {latest_version}, но EXE не найден."))
+            return
+        root.after(0, lambda: offer_update(latest_version, asset["browser_download_url"]))
+    except (OSError, ValueError, KeyError, urllib.error.URLError) as error:
+        error_message = str(error)
+        root.after(0, lambda: status_var.set(f"Не удалось проверить обновления: {error_message}"))
+
+
+def offer_update(latest_version, download_url):
+    if messagebox.askyesno(
+        "Доступно обновление",
+        f"Доступна версия {latest_version}. Скачать и установить ее сейчас?",
+    ):
+        threading.Thread(
+            target=download_update,
+            args=(latest_version, download_url),
+            daemon=True,
+        ).start()
+
+
+def download_update(latest_version, download_url):
+    try:
+        update_path = Path(tempfile.gettempdir()) / "RandomPhoto-update.exe"
+        urllib.request.urlretrieve(download_url, update_path)
+        if getattr(sys, "frozen", False):
+            current_path = Path(sys.executable).resolve()
+            script_path = Path(tempfile.gettempdir()) / "RandomPhoto-update.cmd"
+            script_path.write_text(
+                "@echo off\n"
+                "timeout /t 2 /nobreak >nul\n"
+                f'copy /Y "{update_path}" "{current_path}" >nul\n'
+                f'start "" "{current_path}"\n'
+                f'del "%~f0"\n',
+                encoding="utf-8",
+            )
+            root.after(0, lambda: start_update(script_path, latest_version))
+        else:
+            root.after(0, lambda: status_var.set("Обновление доступно только в EXE-сборке."))
+    except (OSError, urllib.error.URLError) as error:
+        root.after(0, lambda: messagebox.showerror("Ошибка обновления", str(error)))
+
+
+def start_update(script_path, latest_version):
+    status_var.set(f"Устанавливаю обновление {latest_version}...")
+    subprocess.Popen(["cmd", "/c", "start", "", str(script_path)], shell=False)
+    close_app()
 
 
 def choose_folder():
@@ -470,6 +542,7 @@ root.grid_rowconfigure(6, minsize=34)
 root.grid_rowconfigure(7, minsize=40)
 root.grid_rowconfigure(8, minsize=52)
 root.grid_rowconfigure(9, minsize=40)
+root.grid_rowconfigure(10, minsize=42)
 
 ttk.Label(root, text="Порно", style="Title.TLabel").grid(
     row=0, column=0, columnspan=2, sticky="w", padx=(48, 48), pady=(30, 0)
@@ -520,6 +593,11 @@ ttk.Button(root, text="Применить бинд", command=apply_hotkey).grid(
 ttk.Label(root, textvariable=status_var, style="Overlay.TLabel", foreground="#f2d7c8").grid(
     row=9, column=0, columnspan=2, sticky="w", padx=(50, 48), pady=(0, 20)
 )
+ttk.Button(
+    root,
+    text=f"Проверить обновления (v{APP_VERSION})",
+    command=lambda: threading.Thread(target=check_for_updates, daemon=True).start(),
+).grid(row=10, column=0, columnspan=2, sticky="w", padx=50, pady=(0, 24))
 
 hotkey_thread = threading.Thread(target=register_global_hotkey, daemon=True)
 hotkey_entry.bind("<KeyPress>", capture_hotkey)
