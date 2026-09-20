@@ -17,7 +17,7 @@ import pystray
 from PIL import ImageDraw
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 HOTKEY_ID = 1
 WM_HOTKEY = 0x0312
