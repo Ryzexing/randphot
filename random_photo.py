@@ -13,11 +13,13 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageFilter, ImageTk
+import cv2
 import pystray
 from PIL import ImageDraw
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
-APP_VERSION = "1.0.1"
+VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg"}
+APP_VERSION = "1.0.2"
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 HOTKEY_ID = 1
 WM_HOTKEY = 0x0312
@@ -35,11 +37,18 @@ preview_frames = []
 preview_durations = []
 preview_frame_index = 0
 preview_after_id = None
+video_capture = None
+video_after_id = None
+video_paused = False
+video_label = None
 background_image = None
 background_source = None
 photo_cache_folder = None
 photo_cache = []
 last_photo_path = None
+update_available_version = None
+update_download_url = None
+update_button = None
 
 
 def get_settings_path():
@@ -76,10 +85,11 @@ def load_settings():
         with get_settings_path().open("r", encoding="utf-8") as settings_file:
             settings = json.load(settings_file)
     except (OSError, ValueError):
-        return {"folder": "", "hotkey": "Ctrl+Alt+O"}
+        return {"folder": "", "hotkey": "Ctrl+Alt+O", "play_videos": False}
     return {
         "folder": settings.get("folder", ""),
         "hotkey": settings.get("hotkey", "Ctrl+Alt+O"),
+        "play_videos": settings.get("play_videos", False),
     }
 
 
@@ -87,7 +97,11 @@ def save_settings():
     try:
         with get_settings_path().open("w", encoding="utf-8") as settings_file:
             json.dump(
-                {"folder": folder_var.get().strip(), "hotkey": hotkey_var.get().strip()},
+                {
+                    "folder": folder_var.get().strip(),
+                    "hotkey": hotkey_var.get().strip(),
+                    "play_videos": play_videos_var.get(),
+                },
                 settings_file,
                 ensure_ascii=False,
                 indent=2,
@@ -110,17 +124,61 @@ def check_for_updates():
             release = json.loads(response.read().decode("utf-8"))
         latest_version = release.get("tag_name", "").lstrip("v")
         if version_tuple(latest_version) <= version_tuple(APP_VERSION):
-            root.after(0, lambda: status_var.set(f"Установлена последняя версия {APP_VERSION}"))
+            root.after(0, show_current_version)
             return
         assets = release.get("assets", [])
         asset = next((item for item in assets if item.get("name") == "RandomPhoto.exe"), None)
         if asset is None:
             root.after(0, lambda: status_var.set(f"Доступна версия {latest_version}, но EXE не найден."))
             return
-        root.after(0, lambda: offer_update(latest_version, asset["browser_download_url"]))
+        root.after(
+            0,
+            lambda version=latest_version, url=asset["browser_download_url"]: mark_update_available(
+                version, url
+            ),
+        )
     except (OSError, ValueError, KeyError, urllib.error.URLError) as error:
         error_message = str(error)
-        root.after(0, lambda: status_var.set(f"Не удалось проверить обновления: {error_message}"))
+        root.after(0, lambda: show_update_error(error_message))
+
+
+def mark_update_available(latest_version, download_url):
+    global update_available_version, update_download_url
+
+    update_available_version = latest_version
+    update_download_url = download_url
+    update_button.configure(
+        text=f"Найдено обновление: v{latest_version}",
+        state="normal",
+        background="#25834b",
+        activebackground="#1d6b3c",
+        foreground="#ffffff",
+    )
+    status_var.set(f"Доступно обновление {latest_version}. Нажмите зелёную кнопку, чтобы установить.")
+
+
+def show_current_version():
+    update_button.configure(
+        text=f"Проверить обновления (v{APP_VERSION})",
+        state="normal",
+        background="#76585e",
+        activebackground="#63484e",
+        foreground="#fff8f2",
+    )
+    status_var.set(f"Установлена последняя версия {APP_VERSION}")
+
+
+def show_update_error(error_message):
+    update_button.configure(state="normal")
+    status_var.set(f"Не удалось проверить обновления: {error_message}")
+
+
+def on_update_button_click():
+    if update_available_version is not None and update_download_url is not None:
+        offer_update(update_available_version, update_download_url)
+        return
+    update_button.configure(text="Проверяю обновления...", state="disabled")
+    threading.Thread(target=check_for_updates, daemon=True).start()
 
 
 def offer_update(latest_version, download_url):
@@ -172,8 +230,8 @@ def choose_folder():
         status_var.set("Папка выбрана. Нажмите кнопку, чтобы открыть фото.")
 
 
-def find_photos(folder):
-    photos = []
+def find_media(folder, include_videos):
+    media_files = []
 
     def scan_directory(directory):
         try:
@@ -184,9 +242,15 @@ def find_photos(folder):
                             scan_directory(entry.path)
                         elif (
                             entry.is_file(follow_symlinks=False)
-                            and Path(entry.name).suffix.lower() in IMAGE_EXTENSIONS
+                            and (
+                                Path(entry.name).suffix.lower() in IMAGE_EXTENSIONS
+                                or (
+                                    include_videos
+                                    and Path(entry.name).suffix.lower() in VIDEO_EXTENSIONS
+                                )
+                            )
                         ):
-                            photos.append(Path(entry.path))
+                            media_files.append(Path(entry.path))
                     except OSError:
                         continue
         except OSError:
@@ -194,7 +258,7 @@ def find_photos(folder):
 
     try:
         scan_directory(str(folder))
-        return photos
+        return media_files
     except OSError as error:
         messagebox.showerror("Ошибка доступа", f"Не удалось прочитать папку:\n{error}")
         return []
@@ -217,16 +281,23 @@ def refresh_photo_cache():
 
     status_var.set("Обновляю список фотографий...")
     root.update_idletasks()
-    photos = find_photos(folder_path)
+    media_files = find_media(folder_path, play_videos_var.get())
     photo_cache_folder = folder_path
-    photo_cache = photos
-    status_var.set(f"Найдено фотографий: {len(photos)}")
-    return bool(photos)
+    photo_cache = media_files
+    status_var.set(f"Найдено файлов: {len(media_files)}")
+    return bool(media_files)
+
+
+def toggle_video_option():
+    clear_photo_cache()
+    save_settings()
+    state = "включено" if play_videos_var.get() else "выключено"
+    status_var.set(f"Воспроизведение видео {state}. Список файлов обновится при следующем выборе.")
 
 
 def show_photo_location():
     if last_photo_path is None or not last_photo_path.exists():
-        messagebox.showinfo("Фото не выбрано", "Сначала откройте фотографию.")
+        messagebox.showinfo("Файл не выбран", "Сначала откройте фотографию или видео.")
         return
     if sys.platform == "win32":
         subprocess.run(["explorer", "/select,", str(last_photo_path)], check=False)
@@ -251,18 +322,21 @@ def open_random_photo():
     photos = photo_cache
     if not photos:
         messagebox.showinfo(
-            "Фотографии не найдены",
-            "В выбранной папке нет поддерживаемых изображений.",
+            "Файлы не найдены",
+            "В выбранной папке нет поддерживаемых изображений или видео.",
         )
         return
 
     photo = random.choice(photos)
     last_photo_path = photo
     try:
-        show_photo(photo)
+        if photo.suffix.lower() in VIDEO_EXTENSIONS:
+            show_video(photo)
+        else:
+            show_photo(photo)
         photo_path_var.set(str(photo))
         status_var.set(f"Открыто: {photo.name}")
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, RuntimeError, cv2.error) as error:
         messagebox.showerror("Не удалось открыть фото", str(error))
 
 
@@ -297,6 +371,63 @@ def show_photo(photo):
         preview_after_id = root.after(preview_durations[0], animate_preview)
 
 
+def show_video(video_path):
+    global preview_window, video_capture, video_label, video_paused
+
+    close_preview()
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        capture.release()
+        raise OSError("Не удалось открыть видео. Проверьте формат или кодек.")
+
+    video_capture = capture
+    video_paused = False
+    preview_window = tk.Toplevel(root)
+    preview_window.title(video_path.name)
+    preview_window.configure(background="black")
+    preview_window.protocol("WM_DELETE_WINDOW", close_preview)
+    video_label = tk.Label(preview_window, background="black")
+    video_label.pack(padx=8, pady=8)
+    ttk.Button(preview_window, text="Пауза", command=toggle_video_pause).pack(pady=(0, 8))
+    preview_window.focus_force()
+    play_video_frame()
+
+
+def toggle_video_pause():
+    global video_paused
+    video_paused = not video_paused
+    for child in preview_window.winfo_children():
+        if isinstance(child, ttk.Button):
+            child.configure(text="Продолжить" if video_paused else "Пауза")
+            break
+
+
+def play_video_frame():
+    global preview_image, video_after_id
+
+    if video_capture is None or preview_window is None or not preview_window.winfo_exists():
+        return
+    fps = video_capture.get(cv2.CAP_PROP_FPS)
+    interval = max(10, round(1000 / fps)) if fps > 0 else 33
+    if video_paused:
+        video_after_id = root.after(100, play_video_frame)
+        return
+
+    success, frame = video_capture.read()
+    if not success:
+        video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        success, frame = video_capture.read()
+        if not success:
+            close_preview()
+            return
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image = Image.fromarray(frame)
+    image.thumbnail((1100, 760), Image.Resampling.LANCZOS)
+    preview_image = ImageTk.PhotoImage(image)
+    video_label.configure(image=preview_image)
+    video_after_id = root.after(interval, play_video_frame)
+
+
 def animate_preview():
     global preview_image, preview_frame_index, preview_after_id
 
@@ -312,11 +443,17 @@ def animate_preview():
 
 
 def close_preview():
-    global preview_after_id, preview_frames, preview_durations
+    global preview_after_id, video_after_id, video_capture, preview_frames, preview_durations
 
     if preview_after_id is not None:
         root.after_cancel(preview_after_id)
         preview_after_id = None
+    if video_after_id is not None:
+        root.after_cancel(video_after_id)
+        video_after_id = None
+    if video_capture is not None:
+        video_capture.release()
+        video_capture = None
     preview_frames = []
     preview_durations = []
     if preview_window is not None and preview_window.winfo_exists():
@@ -521,6 +658,7 @@ root.after(0, update_background)
 
 folder_var = tk.StringVar(value=initial_settings["folder"])
 hotkey_var = tk.StringVar(value=initial_hotkey)
+play_videos_var = tk.BooleanVar(value=initial_settings["play_videos"])
 status_var = tk.StringVar(value="Выберите папку с фотографиями.")
 photo_path_var = tk.StringVar(value="Фото еще не открывалось")
 
@@ -552,7 +690,7 @@ ttk.Label(root, text="Создатель: Hes", style="Overlay.TLabel", foregrou
 )
 ttk.Label(
     root,
-    text="Выберите папку, и приложение откроет одну случайную фотографию.",
+    text="Выберите папку, чтобы открыть случайное фото или видео.",
     style="Overlay.TLabel",
 ).grid(row=2, column=0, columnspan=2, sticky="w", padx=(50, 48))
 
@@ -562,11 +700,19 @@ ttk.Entry(root, textvariable=folder_var).grid(
 ttk.Button(root, text="Выбрать папку...", command=choose_folder).grid(
     row=3, column=1, sticky="ew", padx=(0, 48)
 )
-ttk.Button(root, text="Открыть случайное фото", command=open_random_photo).grid(
+ttk.Button(root, text="Открыть случайный файл", command=open_random_photo).grid(
     row=4, column=0, columnspan=2, sticky="ew", padx=50, pady=(12, 12), ipady=9
 )
-ttk.Button(root, text="Обновить список фотографий", command=refresh_photo_cache).grid(
-    row=5, column=0, columnspan=2, sticky="w", padx=50, pady=(0, 4)
+ttk.Button(root, text="Обновить список файлов", command=refresh_photo_cache).grid(
+    row=5, column=0, sticky="w", padx=(50, 12), pady=(0, 4)
+)
+ttk.Checkbutton(
+    root,
+    text="Воспроизводить видео",
+    variable=play_videos_var,
+    command=toggle_video_option,
+).grid(
+    row=5, column=1, sticky="w", padx=(0, 48), pady=(0, 4)
 )
 ttk.Label(
     root,
@@ -593,11 +739,19 @@ ttk.Button(root, text="Применить бинд", command=apply_hotkey).grid(
 ttk.Label(root, textvariable=status_var, style="Overlay.TLabel", foreground="#f2d7c8").grid(
     row=9, column=0, columnspan=2, sticky="w", padx=(50, 48), pady=(0, 20)
 )
-ttk.Button(
+update_button = tk.Button(
     root,
     text=f"Проверить обновления (v{APP_VERSION})",
-    command=lambda: threading.Thread(target=check_for_updates, daemon=True).start(),
-).grid(row=10, column=0, columnspan=2, sticky="w", padx=50, pady=(0, 24))
+    command=on_update_button_click,
+    background="#76585e",
+    activebackground="#63484e",
+    foreground="#fff8f2",
+    activeforeground="#fff8f2",
+    relief="flat",
+    padx=12,
+    pady=6,
+)
+update_button.grid(row=10, column=0, columnspan=2, sticky="w", padx=50, pady=(0, 24))
 
 hotkey_thread = threading.Thread(target=register_global_hotkey, daemon=True)
 hotkey_entry.bind("<KeyPress>", capture_hotkey)
@@ -609,4 +763,5 @@ if sys.platform == "win32":
 tray_thread.start()
 
 root.protocol("WM_DELETE_WINDOW", hide_app)
+root.after(700, lambda: threading.Thread(target=check_for_updates, daemon=True).start())
 root.mainloop()
