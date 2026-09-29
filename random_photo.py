@@ -19,7 +19,7 @@ from PIL import ImageDraw
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg"}
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 HOTKEY_ID = 1
 WM_HOTKEY = 0x0312
@@ -195,29 +195,50 @@ def offer_update(latest_version, download_url):
 
 def download_update(latest_version, download_url):
     try:
-        update_path = Path(tempfile.gettempdir()) / "RandomPhoto-update.exe"
+        update_id = os.getpid()
+        update_path = Path(tempfile.gettempdir()) / f"RandomPhoto-update-{update_id}.exe"
         urllib.request.urlretrieve(download_url, update_path)
+        with update_path.open("rb") as update_file:
+            if update_file.read(2) != b"MZ" or update_path.stat().st_size < 1_000_000:
+                raise ValueError("Скачанный файл не похож на полный Windows EXE.")
         if getattr(sys, "frozen", False):
             current_path = Path(sys.executable).resolve()
-            script_path = Path(tempfile.gettempdir()) / "RandomPhoto-update.cmd"
+            script_path = Path(tempfile.gettempdir()) / f"RandomPhoto-update-{update_id}.cmd"
             script_path.write_text(
                 "@echo off\n"
-                "timeout /t 2 /nobreak >nul\n"
-                f'copy /Y "{update_path}" "{current_path}" >nul\n'
-                f'start "" "{current_path}"\n'
+                f'set "UPDATE={update_path}"\n'
+                f'set "TARGET={current_path}"\n'
+                f'set "APP_PID={update_id}"\n'
+                "for /L %%i in (1,1,60) do (\n"
+                "  tasklist /FI \"PID eq %APP_PID%\" /NH | find \"%APP_PID%\" >nul\n"
+                "  if errorlevel 1 goto replace\n"
+                "  timeout /t 1 /nobreak >nul\n"
+                ")\n"
+                "exit /b 1\n"
+                ":replace\n"
+                "for /L %%i in (1,1,10) do (\n"
+                "  copy /Y \"%UPDATE%\" \"%TARGET%\" >nul\n"
+                "  if not errorlevel 1 goto launch\n"
+                "  timeout /t 1 /nobreak >nul\n"
+                ")\n"
+                "exit /b 2\n"
+                ":launch\n"
+                "start \"\" \"%TARGET%\"\n"
+                "del \"%UPDATE%\" >nul 2>&1\n"
                 f'del "%~f0"\n',
                 encoding="utf-8",
             )
             root.after(0, lambda: start_update(script_path, latest_version))
         else:
             root.after(0, lambda: status_var.set("Обновление доступно только в EXE-сборке."))
-    except (OSError, urllib.error.URLError) as error:
-        root.after(0, lambda: messagebox.showerror("Ошибка обновления", str(error)))
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        error_message = str(error)
+        root.after(0, lambda: messagebox.showerror("Ошибка обновления", error_message))
 
 
 def start_update(script_path, latest_version):
     status_var.set(f"Устанавливаю обновление {latest_version}...")
-    subprocess.Popen(["cmd", "/c", "start", "", str(script_path)], shell=False)
+    subprocess.Popen(["cmd", "/c", str(script_path)], shell=False, creationflags=subprocess.CREATE_NO_WINDOW)
     close_app()
 
 
