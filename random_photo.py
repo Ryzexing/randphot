@@ -19,8 +19,9 @@ import pystray
 from PIL import ImageDraw
 
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg"}
-IMAGE_EXTENSIONS = set(Image.registered_extensions()) - VIDEO_EXTENSIONS
-APP_VERSION = "1.0.10"
+NON_IMAGE_EXTENSIONS = {".pdf"}
+IMAGE_EXTENSIONS = set(Image.registered_extensions()) - VIDEO_EXTENSIONS - NON_IMAGE_EXTENSIONS
+APP_VERSION = "1.0.11"
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 AUTOSTART_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "RandomPhoto"
@@ -705,7 +706,7 @@ def open_video(video_path):
     )
     if vlc_path is not None:
         video_process = subprocess.Popen(
-            [str(vlc_path), "--no-one-instance", "--play-and-exit", str(video_path)],
+            [str(vlc_path), "--one-instance", "--play-and-exit", str(video_path)],
             close_fds=True,
         )
     elif sys.platform == "win32":
