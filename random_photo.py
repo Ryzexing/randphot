@@ -20,7 +20,7 @@ from PIL import ImageDraw
 
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg"}
 IMAGE_EXTENSIONS = set(Image.registered_extensions()) - VIDEO_EXTENSIONS
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 AUTOSTART_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "RandomPhoto"
@@ -283,7 +283,8 @@ def show_settings():
 
 
 def version_tuple(version):
-    return tuple(int(part) for part in version.lstrip("v").split(".")[:3])
+    normalized = version.strip().lstrip("vV").replace(",", ".")
+    return tuple(int(part) for part in normalized.split(".")[:3])
 
 
 def check_for_updates():
