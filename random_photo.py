@@ -21,7 +21,8 @@ from PIL import ImageDraw
 VIDEO_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".wmv", ".mpeg", ".mpg"}
 NON_IMAGE_EXTENSIONS = {".pdf"}
 IMAGE_EXTENSIONS = set(Image.registered_extensions()) - VIDEO_EXTENSIONS - NON_IMAGE_EXTENSIONS
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.1.1"
+START_HIDDEN = "--startup" in sys.argv[1:]
 GITHUB_REPOSITORY = "Ryzexing/randphot"
 AUTOSTART_REGISTRY_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "RandomPhoto"
@@ -217,6 +218,7 @@ def configure_autostart(enabled):
                 command = [str(sys.executable)]
                 if not getattr(sys, "frozen", False):
                     command.append(str(Path(__file__).resolve()))
+                command.append("--startup")
                 winreg.SetValueEx(
                     registry_key,
                     AUTOSTART_VALUE_NAME,
@@ -929,6 +931,8 @@ if parsed_initial_hotkey is not None:
     pending_hotkey = parsed_initial_hotkey
 
 root = tk.Tk()
+if START_HIDDEN:
+    root.withdraw()
 root.title("Порно")
 root.geometry("820x520")
 root.minsize(720, 460)
